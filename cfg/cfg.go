@@ -5,7 +5,7 @@ import (
 )
 
 var INFORGE_FORUM = "https://www.inforge.net/forum/forums/passwords-dump.1565/index.rss"
-var PASTEBIN_LINK = "pastebin.com/(?P<path>[a-zA-Z0-9_/-]+)"
+var PASTEBIN_LINK = "(?i)pastebin.com/(?P<path>[a-zA-Z0-9_/-]+)"
 var PASTEBIN_URL = "https://pastebin.com/raw/%s"
 
 type Config struct {
