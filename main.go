@@ -77,6 +77,24 @@ func (f *Fetcher) readLastSeen() string {
 }
 
 
+func (f *Fetcher) writeHistory(guid string, title string, url string) bool {
+	if _, err := os.Stat(f.config.Outdir); os.IsNotExist(err) {
+		os.MkdirAll(f.config.Outdir, 0755)
+	}
+	hFile := path.Join(f.config.Outdir, ".history")
+	fd, err := os.OpenFile(hFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return false
+	}
+	defer fd.Close()
+	line := fmt.Sprintf("%s\t%s\t%s\n", guid, title, url)
+	if _, err = fd.WriteString(line); err != nil {
+		return false
+	}
+	return true
+}
+
+
 func (f *Fetcher) Run() int {
 	fp := gofeed.NewParser()
 	feed, _ := fp.ParseURL(f.config.Feed)
@@ -114,8 +132,11 @@ func (f *Fetcher) Run() int {
 				fmt.Printf("%s\n", url)
 				seen[id] = true
 				if !f.config.Dry {
-					f.fetchPaste(id)
+					if !f.fetchPaste(id) {
+						continue
+					}
 				}
+				f.writeHistory(id, item.Title, url)
 				count += 1
 			}
 		}
