@@ -5,13 +5,40 @@ import (
 	"fmt"
 	"log"
 	"path"
+	"bufio"
 	"regexp"
 	"strings"
 	"net/http"
 	"io/ioutil"
-	"github.com/VaticanEmbassy/inforcefeed/cfg"
+	"github.com/VaticanEmbassy/pastebinimport/cfg"
 	"github.com/mmcdole/gofeed"
 )
+
+var reNewlines = regexp.MustCompile(`[\r\n\t]`)
+
+
+type Paste struct {
+	Id string
+	Title string
+	Url string
+}
+
+
+func (p *Paste) String() string {
+	return fmt.Sprintf("%s\t%s\t%s",
+			reNewlines.ReplaceAllString(p.Id, " "),
+			reNewlines.ReplaceAllString(p.Title, " "),
+			reNewlines.ReplaceAllString(p.Url, " "))
+}
+
+
+func NewPaste(id string, title string, url string) Paste {
+	p := Paste{}
+	p.Id = id
+	p.Title = title
+	p.Url = url
+	return p
+}
 
 
 type Fetcher struct {
@@ -44,40 +71,7 @@ func (f *Fetcher) fetchPaste(id string) bool {
 }
 
 
-func (f *Fetcher) writeLastSeen(guid string) bool {
-	if _, err := os.Stat(f.config.Outdir); os.IsNotExist(err) {
-		os.MkdirAll(f.config.Outdir, 0755)
-	}
-	lsFile := path.Join(f.config.Outdir, ".last_guid")
-	err := ioutil.WriteFile(lsFile, []byte(guid), 0644)
-	if err != nil {
-		return false
-	}
-	return true
-}
-
-
-func (f *Fetcher) readLastSeen() string {
-	lsFile := path.Join(f.config.Outdir, ".last_guid")
-	if _, err := os.Stat(lsFile); os.IsNotExist(err) {
-		return ""
-	}
-	file, err := os.Open(lsFile)
-	if err != nil {
-		log.Println(err)
-		return ""
-	}
-	defer file.Close()
-	b, err := ioutil.ReadAll(file)
-	if err != nil {
-		log.Println(err)
-		return ""
-	}
-	return strings.TrimSpace(string(b))
-}
-
-
-func (f *Fetcher) writeHistory(guid string, title string, url string) bool {
+func (f *Fetcher) writeHistoryLine(paste Paste) bool {
 	if _, err := os.Stat(f.config.Outdir); os.IsNotExist(err) {
 		os.MkdirAll(f.config.Outdir, 0755)
 	}
@@ -87,11 +81,36 @@ func (f *Fetcher) writeHistory(guid string, title string, url string) bool {
 		return false
 	}
 	defer fd.Close()
-	line := fmt.Sprintf("%s\t%s\t%s\n", guid, title, url)
+	line := fmt.Sprintf("%s\n", paste.String())
 	if _, err = fd.WriteString(line); err != nil {
 		return false
 	}
 	return true
+}
+
+
+func (f *Fetcher) readHistory() map[string]Paste {
+	hist := make(map[string]Paste)
+	if _, err := os.Stat(f.config.Outdir); os.IsNotExist(err) {
+		return hist
+	}
+	hFile := path.Join(f.config.Outdir, ".history")
+	fd, err := os.OpenFile(hFile, os.O_RDONLY, 0644)
+	defer fd.Close()
+	if err != nil {
+		return hist
+	}
+	scanner := bufio.NewScanner(fd)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		pieces := strings.SplitN(line, "\t", 3)
+		if (len(pieces) != 3) {
+			continue
+		}
+		paste := NewPaste(pieces[0], pieces[1], pieces[2])
+		hist[pieces[0]] = paste
+	}
+	return hist
 }
 
 
@@ -100,16 +119,9 @@ func (f *Fetcher) Run() int {
 	feed, _ := fp.ParseURL(f.config.Feed)
 	reLink := regexp.MustCompile(cfg.PASTEBIN_LINK)
 	groupNames := reLink.SubexpNames()
-	seen := map[string]bool{}
 	count := 0
-	for idx, item := range feed.Items {
-		lastSeenGUID := f.readLastSeen()
-		if lastSeenGUID != "" && item.GUID == lastSeenGUID {
-			break
-		}
-		if idx == 0 && !f.config.Dry && item.GUID != "" {
-			f.writeLastSeen(item.GUID)
-		}
+	history := f.readHistory()
+	for _, item := range feed.Items {
 		for _, match := range reLink.FindAllStringSubmatch(item.Content, -1) {
 			for groupIdx, group := range match {
 				name := groupNames[groupIdx]
@@ -125,18 +137,19 @@ func (f *Fetcher) Run() int {
 				if id == "" {
 					continue
 				}
-				if _, ok := seen[id]; ok {
+				if _, ok := history[id]; ok {
 					continue
 				}
 				url := fmt.Sprintf(cfg.PASTEBIN_URL, id)
 				fmt.Printf("%s\n", url)
-				seen[id] = true
+				paste := NewPaste(id, item.Title, url)
+				history[id] = paste
 				if !f.config.Dry {
 					if !f.fetchPaste(id) {
 						continue
 					}
 				}
-				f.writeHistory(id, item.Title, url)
+				f.writeHistoryLine(paste)
 				count += 1
 			}
 		}
