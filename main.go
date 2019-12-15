@@ -46,23 +46,53 @@ type Fetcher struct {
 }
 
 
-func (f *Fetcher) fetchPaste(id string) bool {
-	resp, err := http.Get(fmt.Sprintf(cfg.PASTEBIN_URL, id))
+func (f *Fetcher) fetchURL(url string) ([]byte, error) {
+	if f.config.Verbose {
+		log.Println(fmt.Sprintf("### FETCH URL %s ###", url))
+	}
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", url, nil)
+	var body []byte
 	if err != nil {
 		log.Println(err)
-		return false
+		return body, err
+	}
+	req.Header.Set("User-Agent", f.config.UserAgent)
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Println(err)
+		return body, err
+	}
+	if resp.StatusCode != 200 {
+		log.Println(fmt.Sprintf("HTTP status code not 200: %d", resp.StatusCode))
+		return body, err
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err = ioutil.ReadAll(resp.Body)
 	if err != nil {
 		log.Println(err)
+		return body, err
+	}
+	if f.config.Verbose {
+		log.Println(fmt.Sprintf("### BODY %s ###", url))
+		log.Println(string(body))
+		log.Println(fmt.Sprintf("### BODY END %s ###", url))
+	}
+	return body, err
+}
+
+
+func (f *Fetcher) fetchPaste(id string) bool {
+	url := fmt.Sprintf(cfg.PASTEBIN_URL, id)
+	paste, err := f.fetchURL(url)
+	if err != nil {
 		return false
 	}
 	if _, err := os.Stat(f.config.Outdir); os.IsNotExist(err) {
 		os.MkdirAll(f.config.Outdir, 0755)
 	}
 	destFile := path.Join(f.config.Outdir, id)
-	err = ioutil.WriteFile(destFile, body, 0644)
+	err = ioutil.WriteFile(destFile, paste, 0644)
 	if err != nil {
 		log.Println(err)
 		return false
@@ -115,12 +145,27 @@ func (f *Fetcher) readHistory() map[string]Paste {
 
 
 func (f *Fetcher) Run() int {
+	count := 0
 	fp := gofeed.NewParser()
-	feed, _ := fp.ParseURL(f.config.Feed)
+	feedBody, err := f.fetchURL(f.config.Feed)
+	if err != nil {
+		log.Println("error fetching the RSS feed")
+		log.Println(err)
+		return count
+	}
+	feed, err := fp.ParseString(string(feedBody))
+	if err != nil {
+		log.Println("error parsing the RSS feed")
+		log.Println(err)
+		return count
+	}
 	reLink := regexp.MustCompile(cfg.PASTEBIN_LINK)
 	groupNames := reLink.SubexpNames()
-	count := 0
 	history := f.readHistory()
+	if feed.Items == nil {
+		log.Println("no items in feed")
+		return count
+	}
 	for _, item := range feed.Items {
 		for _, match := range reLink.FindAllStringSubmatch(item.Content, -1) {
 			for groupIdx, group := range match {
